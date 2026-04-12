@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.42.0",
+    "mcp>=1.0.0",
     "dwave-neal>=0.6.0",
     "dimod>=0.12.0",
     "pyqubo>=1.5.0",
@@ -22,6 +22,9 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]
+standalone = [
+    "anthropic>=0.42.0",
+]
 quantum = [
     "qiskit>=1.0.0",
     "qiskit-aer>=0.15.0",
@@ -29,7 +32,7 @@ quantum = [
 ]
 
 [project.scripts]
-spinchain = "spinchain:main"
+spinchain-server = "spinchain.server:main"
 
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10.0"]

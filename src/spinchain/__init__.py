@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from spinchain!")
+"""SpinChain: Inference-time reasoning optimization using QUBO/Ising formulations."""
+
+__version__ = "0.1.0"
