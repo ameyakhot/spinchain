@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from spinchain.tracing import TraceLogger, StageTrace
+from spinchain.tracing import TraceLogger
 
 
 @pytest.fixture

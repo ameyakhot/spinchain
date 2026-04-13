@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from spinchain.tracing import TraceLogger, DEFAULT_TRACE_DIR
+from spinchain.tracing import TraceLogger
 
 
 @dataclass

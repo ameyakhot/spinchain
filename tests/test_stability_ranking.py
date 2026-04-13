@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import dimod
-import numpy as np
-import pytest
 
 from spinchain.server import _stability_ranking
 

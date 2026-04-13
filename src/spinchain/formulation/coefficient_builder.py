@@ -8,7 +8,6 @@ Implements the coefficient design from QCR-LLM (arXiv 2510.24509):
 from __future__ import annotations
 
 import numpy as np
-from scipy.stats import zscore
 
 
 class CoefficientBuilder:
