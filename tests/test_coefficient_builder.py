@@ -165,3 +165,27 @@ class TestQuadraticWeights:
         w = cb.compute_quadratic_weights(sources, num_completions=2, embeddings=emb)
 
         assert w.shape == (2, 2)
+
+    def test_zscore_clipping_non_cooccurring_pairs(self):
+        """Pairs with non-positive raw correlation must not get positive z-scores.
+
+        Without clipping, the negative mean correlation (most pairs don't co-occur)
+        inflates uncorrelated pairs, making diverse noise selection energetically
+        favorable.
+        """
+        # 6 fragments from 6 completions, each appearing in only 1 completion
+        # None co-occur => all raw correlations are negative
+        sources = [{i} for i in range(6)]
+        emb = np.eye(6)  # orthogonal => no similarity penalty
+        cb = CoefficientBuilder(beta=1.0, lambda_sim=0.0)
+        w = cb.compute_quadratic_weights(sources, num_completions=6, embeddings=emb)
+
+        # All pairs have negative raw correlation (no co-occurrence)
+        # After z-score clipping, all quadratic weights should be non-negative
+        # (i.e., not attractive / not rewarding co-selection)
+        for i in range(6):
+            for j in range(i + 1, 6):
+                assert w[i, j] >= 0 or w[i, j] == pytest.approx(0.0, abs=1e-6), (
+                    f"w[{i},{j}]={w[i,j]:.4f} is negative — non-co-occurring pairs "
+                    f"should not be attracted after z-score clipping"
+                )

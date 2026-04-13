@@ -89,6 +89,11 @@ class CoefficientBuilder:
         else:
             z_corr = co_occurrence
 
+        # Clip: pairs with non-positive raw correlation must not get positive
+        # z-scores. Without this, the negative mean (most pairs don't co-occur)
+        # inflates uncorrelated pairs, rewarding diverse noise selection.
+        z_corr = np.where(co_occurrence <= 0, np.minimum(z_corr, 0.0), z_corr)
+
         # Cosine similarity matrix
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-10)
