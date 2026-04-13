@@ -11,7 +11,17 @@ SpinChain takes multiple diverse reasoning chains, extracts fragments, formulate
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
-### Clone and install
+### Install skills (recommended)
+
+Install SpinChain skills into any Claude Code project via [skills.sh](https://skills.sh):
+
+```bash
+npx skillsadd ameyakhot/spinchain
+```
+
+This gives you 6 skills: `spinchain-optimize`, `analyze-spinchain`, `test-spinchain`, `spinchain-status`, `spinchain-bench`, `spinchain-trace`.
+
+### Clone and install the server
 
 ```bash
 git clone https://github.com/ameyakhot/spinchain.git
@@ -127,17 +137,18 @@ uv run python -m spinchain.analyze --last 10
 uv run --extra dev python -m pytest tests/ -v
 ```
 
-## Claude Code Slash Commands
+## Skills
 
-When working inside the SpinChain project directory, these slash commands are available:
+Install via [skills.sh](https://skills.sh) with `npx skillsadd ameyakhot/spinchain`, or use as slash commands when working inside the project directory.
 
-| Command | Description |
-|---------|-------------|
-| `/analyze-spinchain` | Run trace analysis — usage stats, latency breakdown, anomalies |
-| `/test-spinchain` | Run the full test suite (71 tests) |
-| `/spinchain-status` | Health check — config, imports, trace summary |
-| `/spinchain-bench` | Run the example benchmark and inspect pipeline output |
-| `/spinchain-trace` | Inspect raw trace records — recent calls, specific trace IDs |
+| Skill | Description |
+|-------|-------------|
+| `spinchain-optimize` | Core skill — teaches Claude how to generate diverse chains and call `optimize_reasoning` effectively |
+| `analyze-spinchain` | Run trace analysis — usage stats, latency breakdown, anomalies |
+| `test-spinchain` | Run the full test suite (71 tests) |
+| `spinchain-status` | Health check — config, imports, trace summary |
+| `spinchain-bench` | Run the example benchmark and inspect pipeline output |
+| `spinchain-trace` | Inspect raw trace records — recent calls, specific trace IDs |
 
 ## Project structure
 
