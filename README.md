@@ -103,6 +103,69 @@ Claude receives optimized fragments
 and synthesizes final answer
 ```
 
+## Benchmarking
+
+SpinChain includes a benchmark harness that evaluates fragment-level QUBO optimization against standard baselines on reasoning datasets with known ground truth.
+
+### Methods compared
+
+| Method | Approach |
+|--------|----------|
+| **SpinChain** | QUBO/SA fragment selection — popularity, co-occurrence, and similarity encoded as an Ising model |
+| **Majority vote** | Self-consistency (Wang et al. 2022) — pick the most common final answer across K chains |
+| **Random** | Pick one chain at random — floor baseline |
+| **Union** | All deduplicated fragments, no optimization — isolates whether the QUBO step adds value |
+
+### Running benchmarks
+
+```bash
+# Install benchmark dependencies
+uv sync --extra benchmark
+
+# Run on GSM8K (requires ANTHROPIC_API_KEY for chain generation)
+uv run python -m benchmarks --dataset gsm8k --chains 7 --limit 100
+
+# Rerun with cached chains (no API calls, free)
+uv run python -m benchmarks --dataset gsm8k --chains 7 --limit 100 --no-generate
+```
+
+Chains are cached to `benchmarks/.cache/` so generation cost is paid once. Different model/temperature/K configurations get separate cache files.
+
+### Validation results
+
+Validated on 3 GSM8K problems (K=3 chains each) with synthetic chains containing both agreement and disagreement cases:
+
+```
+BENCHMARK RESULTS (3 problems)
+Agreement:       1 / 3 (33.3%)
+Disagreement:    2 / 3
+
+Method                  Overall   Disagree  No Answer
+-----------------------------------------------------
+majority_vote             66.7%      50.0%          0
+random                    66.7%      50.0%          0
+spinchain                 66.7%      50.0%          0
+union                     66.7%      50.0%          0
+```
+
+### What the results show
+
+SpinChain only adds value when reasoning chains **disagree**. On agreement cases (all chains produce the same answer), every method ties — there is nothing to optimize.
+
+On disagreement cases, the validation revealed a specific behavior: **SpinChain's QUBO formulation currently tracks majority vote**. The linear popularity term (`-mu * p_i`) dominates fragment selection, which means SpinChain selects fragments from the majority of chains. When the majority is correct, this works. When the majority is wrong (as in the house-flipping problem where 2/3 chains computed the wrong profit), SpinChain inherits the same failure mode as majority vote.
+
+This is a precise, measurable finding: the co-occurrence and similarity quadratic terms do not yet provide enough signal to override the popularity bias. The benchmark harness is designed to measure exactly this gap at scale — the next step is running on 100+ real LLM-generated chains where the quadratic terms have more varied signal to work with, and sweeping the QUBO hyperparameters (mu, alpha, beta, lambda) to find configurations where fragment-level optimization outperforms chain-level voting.
+
+### Datasets supported
+
+| Dataset | Format | Status |
+|---------|--------|--------|
+| **GSM8K** | 1,319 math problems, integer answers | Loader implemented |
+| **ARC Challenge** | 1,172 science MC questions | Extractor ready, loader planned |
+| **StrategyQA** | 2,290 yes/no multi-hop questions | Extractor ready, loader planned |
+
+See [docs/benchmark-harness.md](docs/benchmark-harness.md) for architecture details, per-problem analysis, and CLI reference.
+
 ## Usage
 
 ### As an MCP server (primary use)
@@ -146,7 +209,7 @@ Install via `/plugin marketplace add ameyakhot/spinchain` in Claude Code, or use
 |-------|-------------|
 | `spinchain-optimize` | Core skill — teaches Claude how to generate diverse chains and call `optimize_reasoning` effectively |
 | `analyze-spinchain` | Run trace analysis — usage stats, latency breakdown, anomalies |
-| `test-spinchain` | Run the full test suite (71 tests) |
+| `test-spinchain` | Run the full test suite (72 tests) |
 | `spinchain-status` | Health check — config, imports, trace summary |
 | `spinchain-bench` | Run the example benchmark and inspect pipeline output |
 | `spinchain-trace` | Inspect raw trace records — recent calls, specific trace IDs |
@@ -166,9 +229,13 @@ spinchain/
 │   └── solvers/
 │       ├── base.py                # Abstract solver interface
 │       └── simulated_annealing.py # dwave-neal SA solver
-├── tests/                         # 71 tests
+├── tests/                         # 72 unit tests
+├── benchmarks/                    # Benchmark harness (vs. majority vote, random, union)
+│   ├── datasets/                  # Dataset loaders (GSM8K, ARC, StrategyQA)
+│   ├── methods/                   # Baseline and SpinChain method implementations
+│   └── extractors/                # Regex answer extraction per dataset type
 ├── examples/
-│   └── basic_usage.py             # Synthetic benchmark
+│   └── basic_usage.py             # Synthetic demo (no API key needed)
 ├── .claude/commands/              # Claude Code slash commands
 └── traces/                        # Trace logs (created at runtime)
 ```

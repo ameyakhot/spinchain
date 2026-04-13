@@ -14,3 +14,10 @@ CLAUDE.md
 
 # Internal design docs
 docs/
+
+# Benchmark cache and results
+benchmarks/.cache/
+
+# Runtime data
+.anneal/
+traces/

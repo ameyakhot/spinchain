@@ -25,6 +25,11 @@ dev = [
 standalone = [
     "anthropic>=0.42.0",
 ]
+benchmark = [
+    "anthropic>=0.42.0",
+    "datasets>=3.0.0",
+    "tqdm>=4.60.0",
+]
 quantum = [
     "qiskit>=1.0.0",
     "qiskit-aer>=0.15.0",
