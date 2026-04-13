@@ -13,10 +13,11 @@ SpinChain takes multiple diverse reasoning chains, extracts fragments, formulate
 
 ### Install skills (recommended)
 
-Install SpinChain skills into any Claude Code project via [skills.sh](https://skills.sh):
+Install SpinChain skills into Claude Code via the plugin marketplace:
 
-```bash
-npx skillsadd ameyakhot/spinchain
+```
+/plugin marketplace add ameyakhot/spinchain
+/plugin install spinchain-skills@spinchain
 ```
 
 This gives you 6 skills: `spinchain-optimize`, `analyze-spinchain`, `test-spinchain`, `spinchain-status`, `spinchain-bench`, `spinchain-trace`.
@@ -139,7 +140,7 @@ uv run --extra dev python -m pytest tests/ -v
 
 ## Skills
 
-Install via [skills.sh](https://skills.sh) with `npx skillsadd ameyakhot/spinchain`, or use as slash commands when working inside the project directory.
+Install via `/plugin marketplace add ameyakhot/spinchain` in Claude Code, or use as slash commands when working inside the project directory.
 
 | Skill | Description |
 |-------|-------------|

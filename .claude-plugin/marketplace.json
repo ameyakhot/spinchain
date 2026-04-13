@@ -1,0 +1,27 @@
+{
+  "name": "spinchain",
+  "owner": {
+    "name": "Ameya Khot",
+    "email": "ameyakhot18@gmail.com"
+  },
+  "metadata": {
+    "description": "SpinChain: Inference-time reasoning optimization using QUBO/Ising formulations",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "spinchain-skills",
+      "description": "SpinChain reasoning optimizer skills — optimize LLM reasoning via QUBO/simulated annealing, analyze traces, run benchmarks, check server health",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/spinchain-optimize",
+        "./skills/analyze-spinchain",
+        "./skills/test-spinchain",
+        "./skills/spinchain-status",
+        "./skills/spinchain-bench",
+        "./skills/spinchain-trace"
+      ]
+    }
+  ]
+}
