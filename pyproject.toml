@@ -1,6 +1,6 @@
 [project]
 name = "spinchain"
-version = "0.1.0"
+version = "0.1.1"
 description = "Inference-time reasoning optimization using QUBO/Ising formulations"
 readme = "README.md"
 authors = [
