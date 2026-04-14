@@ -1,35 +1,84 @@
 # SpinChain
 
-Inference-time reasoning optimization for LLMs using QUBO/Ising formulations. Built as an MCP server for Claude Code.
+Automatic error detection and correction for LLM reasoning, using quantum-inspired optimization to select verified-correct fragments from multiple reasoning attempts.
 
-SpinChain takes multiple diverse reasoning chains, extracts fragments, formulates their selection as a QUBO problem (following [QCR-LLM](https://arxiv.org/abs/2510.24509)), solves it with simulated annealing, and returns the most stable and coherent fragment subset.
+## What SpinChain Does
 
-## Current Status: First Proof of Concept
+When an LLM reasons through a problem, it sometimes makes computational errors — wrong arithmetic, incorrect percentages, bad unit conversions. SpinChain catches these errors automatically and selects the correct reasoning.
 
-SpinChain is an active research project with a working proof that **QUBO fragment selection with arithmetic verification outperforms majority vote** on problems where the majority's reasoning contains a detectable arithmetic error.
+```
+Without SpinChain:
 
-### The research journey
+  User asks question → LLM thinks once → answer (might have errors)
 
-1. **Baseline formulation** (QCR-LLM signals: popularity, co-occurrence, similarity) — 936 configs tested, none outperform majority vote. All embedding-space signals fail when the error is semantic.
-2. **Arithmetic verification** — parse "A + B = C" expressions in fragments and verify via eval. One detected error taints the entire answer cluster. **24 out of 36 configs outperform majority vote with zero regressions.**
+With SpinChain:
 
-The critical term is **cluster integrity (ψ)**: if any fragment in an answer cluster has a verified arithmetic error, all fragments in that cluster receive an energy penalty. The solver then selects the correct minority cluster even against a 2:1 popularity disadvantage. See [docs/benchmark-harness.md](docs/benchmark-harness.md) for the full sweep results and [docs/qubo-formulation.md](docs/qubo-formulation.md) for the Hamiltonian specification.
+  User asks question → LLM thinks K times → SpinChain verifies
+                                                    │
+                                              checks every computation
+                                              detects errors automatically
+                                              selects verified-correct fragments
+                                              logs errors for self-improvement
+                                                    │
+                                                    ▼
+                                              verified answer
+```
 
-### What you get today
+SpinChain is the **quality assurance layer** for LLM reasoning. It doesn't fix errors or rewrite reasoning — it **selects around errors** by finding the correct reasoning that already exists in one of the K attempts.
 
-- A working MCP server that Claude Code can call to consolidate and deduplicate reasoning across multiple attempts
-- **Arithmetic verification** that can detect and penalize reasoning chains with computation errors
-- Full tracing and observability for every optimization call
-- A benchmark harness with sweep infrastructure for evaluating fragment selection methods against majority vote
-- A modular QUBO pipeline where the formulation, solver, and ranking are independently swappable
-- The same QUBO encoding that runs on classical SA today is hardware-portable to D-Wave quantum annealers, optical Ising machines, and QAOA circuits
+### How it works
 
-### What's next
+1. The LLM generates K diverse reasoning chains for the same question
+2. SpinChain breaks them into sentence-level fragments
+3. Every computation in every fragment is verified (`A + B = C` → is that actually true?)
+4. Fragment selection is formulated as a QUBO (Quadratic Unconstrained Binary Optimization) problem
+5. Simulated annealing finds the optimal subset — verified-correct, coherent, non-redundant
+6. A single detected error taints the entire answer cluster, flipping selection to the correct minority
 
-1. **Scale validation** — run on 100+ real LLM-generated chains to measure how often arithmetic errors occur in the wild and how often verification flips the answer
-2. **Expand verification** — more parseable expression patterns (percentages, fractions, multi-step equations) to increase fragment coverage
-3. **Integrate into MCP server** — bring verification terms into `optimize_reasoning()` so Claude Code users get the benefit automatically
-4. **Different domains** — code generation (where fragments are functions/blocks) may benefit from analogous verification (syntax checking, type checking)
+### What it catches (domain-agnostic)
+
+SpinChain doesn't need to know the domain. It checks every computation the LLM writes in its reasoning:
+
+| Pattern | Example | Detection |
+|---------|---------|-----------|
+| Arithmetic | "80000 + 50000 = 120000" | eval: 80000+50000 ≠ 120000 |
+| Percentages | "25% of 80000 = 15000" | eval: 80000×0.25 ≠ 15000 |
+| Multiplication | "24 * 0.8 = 18.2" | eval: 24×0.8 ≠ 18.2 |
+| Any `A op B = C` | Works across finance, medicine, engineering, legal | Automatic |
+
+Whether the LLM is calculating drug dosages, financial projections, engineering tolerances, or tax returns — if it writes explicit math and gets it wrong, SpinChain catches it.
+
+### Self-improving
+
+Every detected error is logged to `~/.spinchain/errors.jsonl` with structured details (expression, stated result, correct result). On subsequent calls, SpinChain reads the error history and boosts verification weights for frequently observed error types. No retraining — the Hamiltonian adapts its coefficients based on accumulated evidence.
+
+### Why QUBO / simulated annealing
+
+Fragment selection isn't independent — fragments depend on each other, contradict each other, or duplicate each other. The QUBO formulation encodes these interactions as pairwise energy terms and evaluates all 2^R combinations jointly. SA finds the lowest-energy (optimal) configuration. Greedy methods evaluate fragments one at a time and miss these interactions.
+
+The QUBO formulation is hardware-portable: the same Hamiltonian runs on classical SA today and on D-Wave quantum annealers, optical Ising machines, or QAOA circuits tomorrow.
+
+## Proven Results
+
+**936 configurations tested across 9 signals** to understand what the QUBO can and cannot do:
+
+- Embedding-space signals (popularity, co-occurrence, similarity, question-relevance) — cannot distinguish correct from incorrect reasoning when all chains are on-topic
+- Structural signals (cluster coherence, cross-cluster agreement) — cannot overcome the numerical advantage of the wrong majority
+- **Arithmetic verification — 24 out of 36 configs outperform majority vote with zero regressions**
+
+The critical term is **cluster integrity (ψ)**: one detected arithmetic error taints the entire answer cluster, allowing the solver to select the correct minority even against a 2:1 popularity disadvantage.
+
+[Live demo: Claude Code → SpinChain MCP → verified answer](docs/live-demo.md) | [Full Hamiltonian specification](docs/qubo-formulation.md) | [Benchmark results](docs/benchmark-harness.md)
+
+## Where SpinChain Fits
+
+| Layer | What it does | Product |
+|-------|-------------|---------|
+| LLM (Claude) | Generates reasoning | Claude Code |
+| **Error detection + optimization** | **Catches errors, selects correct fragments** | **SpinChain** |
+| Context selection | Picks which code to show the LLM | [Anneal](https://github.com/ameyakhot/anneal) |
+
+SpinChain optimizes the **output** (what the user gets). Anneal optimizes the **input** (what the LLM sees). Both use the same QUBO/SA engine.
 
 ## Installation
 
