@@ -6,7 +6,7 @@ from collections import Counter
 
 from benchmarks.datasets.base import Problem
 from benchmarks.extractors import extract_answer
-from benchmarks.methods.base import MethodResult
+from benchmarks.methods.base import MethodResult, count_tokens, total_chain_tokens
 from benchmarks.scoring import score
 
 
@@ -30,6 +30,14 @@ class MajorityVote:
 
         counter = Counter(answers)
         predicted = counter.most_common(1)[0][0]
+        # Output = the winning chain (first chain that produced the winning answer)
+        winning_chain = next(
+            (c for c, a in zip(chains, [extract_answer(c, problem.dataset, problem.choices) for c in chains])
+             if a == predicted),
+            chains[0],
+        )
+        input_tokens = total_chain_tokens(chains)
+        output_tokens = count_tokens(winning_chain)
         return MethodResult(
             method=self.name,
             predicted_answer=predicted,
@@ -38,5 +46,7 @@ class MajorityVote:
                 "vote_counts": dict(counter),
                 "extractable": len(answers),
                 "total_chains": len(chains),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
             },
         )

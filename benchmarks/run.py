@@ -119,6 +119,7 @@ def main() -> None:
     if skipped:
         print(f"\nSkipped {skipped} problems (not in cache, --no-generate set)")
     accumulator.print_summary()
+    accumulator.print_efficiency()
 
     if diagnostics:
         accumulator.print_diagnostics()

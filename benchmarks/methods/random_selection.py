@@ -6,7 +6,7 @@ import random
 
 from benchmarks.datasets.base import Problem
 from benchmarks.extractors import extract_answer
-from benchmarks.methods.base import MethodResult
+from benchmarks.methods.base import MethodResult, count_tokens, total_chain_tokens
 from benchmarks.scoring import score
 
 
@@ -24,5 +24,9 @@ class RandomSelection:
             method=self.name,
             predicted_answer=predicted,
             correct=score(predicted, problem.ground_truth, problem.dataset) if predicted else False,
-            metadata={"selected_chain_index": chains.index(chain)},
+            metadata={
+                "selected_chain_index": chains.index(chain),
+                "input_tokens": total_chain_tokens(chains),
+                "output_tokens": count_tokens(chain),
+            },
         )

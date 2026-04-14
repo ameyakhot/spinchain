@@ -9,7 +9,7 @@ from spinchain.server import optimize_reasoning
 from benchmarks.config import BenchmarkConfig
 from benchmarks.datasets.base import Problem
 from benchmarks.extractors import extract_answer
-from benchmarks.methods.base import MethodResult
+from benchmarks.methods.base import MethodResult, count_tokens, total_chain_tokens
 from benchmarks.scoring import score
 
 
@@ -44,11 +44,15 @@ class SpinChainMethod:
 
         predicted = extract_answer(text, problem.dataset, problem.choices)
 
+        input_tokens = total_chain_tokens(chains)
+        output_tokens = count_tokens(text)
         metadata = {
             "min_energy": result.get("min_energy"),
             "num_fragments": result.get("num_fragments"),
             "num_selected": len(result.get("selected_indices", [])),
             "fallback": result.get("fallback", False),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
         }
 
         if self.diagnostics:

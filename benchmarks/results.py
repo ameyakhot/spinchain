@@ -92,6 +92,63 @@ class ResultsAccumulator:
 
         print(f"{'=' * 70}\n")
 
+    def print_efficiency(self) -> None:
+        """Print token efficiency metrics."""
+        if not self.records:
+            return
+
+        methods = sorted(set(
+            name for r in self.records for name in r.results.keys()
+        ))
+
+        # Check if any method has token data
+        has_tokens = any(
+            "input_tokens" in r.results[m].metadata
+            for r in self.records for m in r.results
+            if m in r.results
+        )
+        if not has_tokens:
+            return
+
+        print(f"{'=' * 78}")
+        print("TOKEN EFFICIENCY")
+        print(f"{'=' * 78}")
+        header = (
+            f"{'Method':<20} {'Avg Input':>10} {'Avg Output':>11} "
+            f"{'Compress':>9} {'Accuracy':>9} {'Efficiency':>11}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for method in methods:
+            input_totals = []
+            output_totals = []
+            corrects = []
+            for r in self.records:
+                if method not in r.results:
+                    continue
+                meta = r.results[method].metadata
+                if "input_tokens" in meta:
+                    input_totals.append(meta["input_tokens"])
+                    output_totals.append(meta["output_tokens"])
+                    corrects.append(1.0 if r.results[method].correct else 0.0)
+
+            if not input_totals:
+                continue
+
+            avg_input = sum(input_totals) / len(input_totals)
+            avg_output = sum(output_totals) / len(output_totals)
+            compression = avg_output / avg_input if avg_input > 0 else 0
+            accuracy = sum(corrects) / len(corrects)
+            efficiency = accuracy / compression if compression > 0 else 0
+
+            print(
+                f"{method:<20} {avg_input:>10.0f} {avg_output:>11.0f} "
+                f"{compression:>8.1%} {accuracy:>8.1%} {efficiency:>11.2f}"
+            )
+
+        print(f"{'=' * 78}\n")
+
     def print_diagnostics(self) -> None:
         """Print QUBO coefficient diagnostics for SpinChain results."""
         has_diag = any(

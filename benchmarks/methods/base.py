@@ -7,6 +7,18 @@ from typing import Protocol
 
 from benchmarks.datasets.base import Problem
 
+_CHARS_PER_TOKEN = 4
+
+
+def count_tokens(text: str) -> int:
+    """Approximate token count."""
+    return len(text) // _CHARS_PER_TOKEN
+
+
+def total_chain_tokens(chains: list[str]) -> int:
+    """Total tokens across all chains."""
+    return sum(count_tokens(c) for c in chains)
+
 
 @dataclass
 class MethodResult:
