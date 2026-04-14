@@ -421,6 +421,33 @@ def _arithmetic_consistency(nums_a: set[float], nums_b: set[float]) -> float:
     return derivable / total_checks if total_checks > 0 else 0.0
 
 
+def _extract_error_details(text: str) -> dict:
+    """Extract structured details about arithmetic errors in text."""
+    matches = _EXPR_PATTERN.findall(text)
+    errors = []
+    for lhs_a, op, lhs_b, rhs in matches:
+        a = float(lhs_a.replace(",", ""))
+        b = float(lhs_b.replace(",", ""))
+        expected = float(rhs.replace(",", ""))
+        if op == "+":
+            actual = a + b
+        elif op == "-":
+            actual = a - b
+        elif op in ("*", "×"):
+            actual = a * b
+        elif op in ("/", "÷"):
+            actual = a / b if b != 0 else float("inf")
+        else:
+            continue
+        if not _approx_eq(actual, expected):
+            errors.append({
+                "expression": f"{lhs_a} {op} {lhs_b}",
+                "stated_result": expected,
+                "correct_result": actual,
+            })
+    return {"arithmetic_errors": errors} if errors else {}
+
+
 def _approx_eq(a: float, b: float, rtol: float = 1e-6) -> bool:
     """Check approximate equality of two floats."""
     if b == 0:

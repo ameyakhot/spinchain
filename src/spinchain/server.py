@@ -13,10 +13,14 @@ import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 from spinchain.formulation.fragment_extractor import FragmentExtractor
-from spinchain.formulation.coefficient_builder import CoefficientBuilder
+from spinchain.formulation.coefficient_builder import (
+    CoefficientBuilder, _verify_arithmetic, _extract_error_details,
+)
 from spinchain.formulation.qubo_builder import QUBOBuilder
 from spinchain.solvers.simulated_annealing import SimulatedAnnealingSolver
 from spinchain.tracing import get_tracer
+from spinchain.error_logger import get_error_logger
+from spinchain.adaptive import AdaptiveCoefficients
 
 logger = logging.getLogger("spinchain.server")
 
@@ -158,49 +162,90 @@ def optimize_reasoning(
             tracer.finish_trace(trace_id, {"fallback": True, "reason": result["reason"]})
             return json.dumps(result)
 
-        # QUBO formulation
+        # QUBO formulation with adaptive coefficients
         stage = tracer.start_stage(trace_id, "qubo_formulation")
-        has_clusters = chain_answers is not None and len(set(chain_answers)) > 1
-        coeff_builder = CoefficientBuilder(
-            gamma=0.5 if question else 0.0,
-            delta=1.0 if has_clusters else 0.0,
-            epsilon=1.0 if has_clusters else 0.0,
-            kappa=2.0 if has_clusters else 0.0,
+        has_clusters = chain_answers is not None and len(set(a for a in chain_answers if a)) > 1
+
+        # Get coefficients adapted to error history
+        adaptive = AdaptiveCoefficients()
+        coeffs = adaptive.get_coefficients(
+            has_clusters=has_clusters,
+            has_question=question is not None,
         )
+        coeff_builder = CoefficientBuilder(**coeffs)
+
+        # Base linear weights (popularity + risk)
         linear_w = coeff_builder.compute_linear_weights(
             extractor.fragment_sources,
             extractor.num_completions,
         )
+
+        # Arithmetic verification (always on)
+        verification_scores = np.array([
+            _verify_arithmetic(frag) for frag in fragments
+        ])
+        linear_w = linear_w + coeff_builder.compute_verification_weights(fragments)
+
+        # Log any detected errors
+        error_logger = get_error_logger()
+        errors_detected = []
+        for i, (frag, vs) in enumerate(zip(fragments, verification_scores)):
+            if vs == -1.0:
+                details = _extract_error_details(frag)
+                error_logger.log_error(
+                    trace_id=trace_id,
+                    error_type="arithmetic",
+                    fragment_text=frag,
+                    details=details,
+                )
+                errors_detected.append({"fragment": frag, "type": "arithmetic", **details})
+
+        # Verification agreement (quadratic)
+        quadratic_verification = coeff_builder.compute_verification_agreement(verification_scores)
+
+        # Question relevance
         if question:
             question_emb = extractor.model.encode([question], convert_to_numpy=True)[0]
-            relevance_w = coeff_builder.compute_relevance_weights(
+            linear_w = linear_w + coeff_builder.compute_relevance_weights(
                 question_emb, extractor.fragment_embeddings,
             )
-            linear_w = linear_w + relevance_w
+
+        # Cluster-aware terms
+        clusters: dict[str, set[int]] = {}
         if has_clusters:
             from collections import defaultdict
-            clusters: dict[str, set[int]] = defaultdict(set)
+            clusters_dd: dict[str, set[int]] = defaultdict(set)
             for idx, ans in enumerate(chain_answers):
                 if ans:
-                    clusters[ans].add(idx)
-            clusters = dict(clusters)
+                    clusters_dd[ans].add(idx)
+            clusters = dict(clusters_dd)
             linear_w = linear_w + coeff_builder.compute_shared_weights(
                 extractor.fragment_sources, clusters,
             )
             linear_w = linear_w + coeff_builder.compute_anchor_weights(fragments)
+            linear_w = linear_w + coeff_builder.compute_cluster_integrity_weights(
+                extractor.fragment_sources, clusters, verification_scores,
+            )
+
+        # Quadratic weights
         quadratic_w = coeff_builder.compute_quadratic_weights(
             extractor.fragment_sources,
             extractor.num_completions,
             extractor.fragment_embeddings,
         )
+        quadratic_w = quadratic_w + quadratic_verification
         if has_clusters:
             quadratic_w = quadratic_w + coeff_builder.compute_cluster_coherence(
                 extractor.fragment_sources, clusters,
             )
+
         qubo_builder = QUBOBuilder()
         bqm = qubo_builder.build(linear_w, quadratic_w, target_fragments=cardinality_k)
         stage.metadata["num_linear_terms"] = len(bqm.linear)
         stage.metadata["num_quadratic_terms"] = len(bqm.quadratic)
+        stage.metadata["errors_detected"] = len(errors_detected)
+        stage.metadata["verification_correct"] = int((verification_scores > 0).sum())
+        stage.metadata["verification_wrong"] = int((verification_scores < 0).sum())
         tracer.end_stage(trace_id, stage)
 
         # Solve
@@ -233,6 +278,14 @@ def optimize_reasoning(
             "min_energy": min(energies) if energies else None,
             "energies": sorted(energies)[:10],
             "fallback": False,
+            "verification": {
+                "fragments_checked": len(fragments),
+                "verified_correct": int((verification_scores > 0).sum()),
+                "verified_wrong": int((verification_scores < 0).sum()),
+                "unverifiable": int((verification_scores == 0).sum()),
+                "errors_detected": errors_detected,
+                "adaptive_coefficients": adaptive.get_error_summary(),
+            },
         }
 
         tracer.finish_trace(trace_id, {
