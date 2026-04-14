@@ -76,6 +76,8 @@ def optimize_reasoning(
     selection_threshold: float = 0.25,
     inclusion_threshold: float = 0.50,
     cardinality_k: int | None = None,
+    question: str | None = None,
+    chain_answers: list[str] | None = None,
 ) -> str:
     """Optimize LLM reasoning chains using QUBO/Ising formulation and simulated annealing.
 
@@ -95,6 +97,9 @@ def optimize_reasoning(
         selection_threshold: Fraction of low-energy solutions used for stability ranking.
         inclusion_threshold: Min frequency in low-energy set to include a fragment.
         cardinality_k: If set, adds a penalty to select approximately this many fragments.
+        question: Optional original question text. When provided, adds a
+            question-relevance term that rewards fragments semantically close
+            to the question.
 
     Returns:
         JSON string with optimized fragments and solver metadata.
@@ -155,16 +160,43 @@ def optimize_reasoning(
 
         # QUBO formulation
         stage = tracer.start_stage(trace_id, "qubo_formulation")
-        coeff_builder = CoefficientBuilder()
+        has_clusters = chain_answers is not None and len(set(chain_answers)) > 1
+        coeff_builder = CoefficientBuilder(
+            gamma=0.5 if question else 0.0,
+            delta=1.0 if has_clusters else 0.0,
+            epsilon=1.0 if has_clusters else 0.0,
+            kappa=2.0 if has_clusters else 0.0,
+        )
         linear_w = coeff_builder.compute_linear_weights(
             extractor.fragment_sources,
             extractor.num_completions,
         )
+        if question:
+            question_emb = extractor.model.encode([question], convert_to_numpy=True)[0]
+            relevance_w = coeff_builder.compute_relevance_weights(
+                question_emb, extractor.fragment_embeddings,
+            )
+            linear_w = linear_w + relevance_w
+        if has_clusters:
+            from collections import defaultdict
+            clusters: dict[str, set[int]] = defaultdict(set)
+            for idx, ans in enumerate(chain_answers):
+                if ans:
+                    clusters[ans].add(idx)
+            clusters = dict(clusters)
+            linear_w = linear_w + coeff_builder.compute_shared_weights(
+                extractor.fragment_sources, clusters,
+            )
+            linear_w = linear_w + coeff_builder.compute_anchor_weights(fragments)
         quadratic_w = coeff_builder.compute_quadratic_weights(
             extractor.fragment_sources,
             extractor.num_completions,
             extractor.fragment_embeddings,
         )
+        if has_clusters:
+            quadratic_w = quadratic_w + coeff_builder.compute_cluster_coherence(
+                extractor.fragment_sources, clusters,
+            )
         qubo_builder = QUBOBuilder()
         bqm = qubo_builder.build(linear_w, quadratic_w, target_fragments=cardinality_k)
         stage.metadata["num_linear_terms"] = len(bqm.linear)

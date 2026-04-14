@@ -1,11 +1,14 @@
 """Build HUBO/QUBO coefficients from fragment statistics.
 
-Implements the coefficient design from QCR-LLM (arXiv 2510.24509):
-- Linear: w_i = -mu * p_i + alpha * risk_i
-- Quadratic: w_ij = -beta * (corr_ij - lambda^2 * sim(i,j))
+Implements the coefficient design from QCR-LLM (arXiv 2510.24509) plus
+cluster-aware extensions:
+- Linear: w_i = -mu * p_i + alpha * risk_i - delta * d_i - kappa * a_i
+- Quadratic: w_ij = -beta * (corr_ij - lambda^2 * sim(i,j)) - epsilon * c_ij
 """
 
 from __future__ import annotations
+
+import re
 
 import numpy as np
 
@@ -18,6 +21,10 @@ class CoefficientBuilder:
         alpha: Weight for fragment stability/risk penalty.
         beta: Weight for pairwise coherence terms.
         lambda_sim: Semantic similarity penalty factor.
+        gamma: Weight for question-relevance term.
+        delta: Weight for cross-cluster agreement (reward shared fragments).
+        epsilon: Weight for answer cluster coherence (attract same-conclusion fragments).
+        kappa: Weight for answer fragment anchoring (pin conclusions).
         regularization: Small constant for z-score stability.
     """
 
@@ -27,12 +34,22 @@ class CoefficientBuilder:
         alpha: float = 0.5,
         beta: float = 1.0,
         lambda_sim: float = 0.3,
+        gamma: float = 0.0,
+        delta: float = 0.0,
+        epsilon: float = 0.0,
+        kappa: float = 0.0,
+        eta: float = 0.0,
         regularization: float = 1e-6,
     ):
         self.mu = mu
         self.alpha = alpha
         self.beta = beta
         self.lambda_sim = lambda_sim
+        self.gamma = gamma
+        self.delta = delta
+        self.epsilon = epsilon
+        self.kappa = kappa
+        self.eta = eta
         self.regularization = regularization
 
     def compute_linear_weights(
@@ -52,6 +69,151 @@ class CoefficientBuilder:
             p_i = len(fragment_sources[i]) / num_completions
             risk_i = p_i * (1.0 - p_i)
             weights[i] = -self.mu * p_i + self.alpha * risk_i
+
+        return weights
+
+    def compute_relevance_weights(
+        self,
+        question_embedding: np.ndarray,
+        fragment_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        """Compute question-relevance weights for each fragment.
+
+        w_i = -gamma * cosine_sim(question, fragment_i)
+
+        Fragments semantically closer to the question receive lower energy
+        (more likely to be selected). This signal is independent of popularity.
+        """
+        q_norm = np.linalg.norm(question_embedding)
+        if q_norm < 1e-10:
+            return np.zeros(len(fragment_embeddings))
+
+        q_normed = question_embedding / q_norm
+        f_norms = np.linalg.norm(fragment_embeddings, axis=1, keepdims=True)
+        f_norms = np.maximum(f_norms, 1e-10)
+        f_normed = fragment_embeddings / f_norms
+
+        cosine_sim = f_normed @ q_normed
+        return -self.gamma * cosine_sim
+
+    def compute_shared_weights(
+        self,
+        fragment_sources: list[set[int]],
+        answer_clusters: dict[str, set[int]],
+    ) -> np.ndarray:
+        """Compute cross-cluster agreement weights.
+
+        w_i = -delta * d_i
+        where d_i = fraction of answer clusters containing fragment i.
+
+        Fragments appearing across all answer clusters are universally agreed
+        upon and receive lower energy (more likely to be selected).
+        """
+        r = len(fragment_sources)
+        num_clusters = len(answer_clusters)
+        if num_clusters == 0:
+            return np.zeros(r)
+
+        weights = np.zeros(r)
+        for i in range(r):
+            clusters_containing = sum(
+                1 for chains in answer_clusters.values()
+                if fragment_sources[i] & chains
+            )
+            d_i = clusters_containing / num_clusters
+            weights[i] = -self.delta * d_i
+
+        return weights
+
+    def compute_anchor_weights(
+        self,
+        fragments: list[str],
+    ) -> np.ndarray:
+        """Compute answer-anchoring weights.
+
+        w_i = -kappa * a_i
+        where a_i = 1 if fragment contains a final answer pattern.
+
+        Pins conclusion fragments so stability ranking doesn't drop them.
+        """
+        r = len(fragments)
+        weights = np.zeros(r)
+        pattern = re.compile(
+            r"(?:[Tt]he answer is|####)\s*\S", re.IGNORECASE,
+        )
+        for i in range(r):
+            if pattern.search(fragments[i]):
+                weights[i] = -self.kappa
+
+        return weights
+
+    def compute_cluster_coherence(
+        self,
+        fragment_sources: list[set[int]],
+        answer_clusters: dict[str, set[int]],
+    ) -> np.ndarray:
+        """Compute answer cluster coherence weights (quadratic).
+
+        w_ij = -epsilon * c_ij
+        where c_ij = fraction of answer clusters where both fragments appear.
+
+        Fragments supporting the same conclusion attract each other,
+        creating competing energy wells per answer cluster.
+        """
+        r = len(fragment_sources)
+        num_clusters = len(answer_clusters)
+        weights = np.zeros((r, r))
+
+        if num_clusters == 0:
+            return weights
+
+        for i in range(r):
+            for j in range(i + 1, r):
+                clusters_both = sum(
+                    1 for chains in answer_clusters.values()
+                    if (fragment_sources[i] & chains) and (fragment_sources[j] & chains)
+                )
+                c_ij = clusters_both / num_clusters
+                weights[i, j] = -self.epsilon * c_ij
+                weights[j, i] = weights[i, j]
+
+        return weights
+
+    def compute_numerical_consistency(
+        self,
+        fragments: list[str],
+    ) -> np.ndarray:
+        """Compute numerical consistency weights (quadratic).
+
+        w_ij = -eta * v_ij
+        where v_ij measures arithmetic relationships between numbers in
+        fragments i and j.
+
+        Fragments whose numbers are connected by basic arithmetic
+        (+, -, ×, ÷) receive ferromagnetic coupling — they form a
+        consistent computational chain.
+        """
+        r = len(fragments)
+        weights = np.zeros((r, r))
+
+        if self.eta == 0:
+            return weights
+
+        # Extract numbers from each fragment
+        fragment_numbers = []
+        for frag in fragments:
+            nums = _extract_numbers(frag)
+            fragment_numbers.append(nums)
+
+        # Compute pairwise consistency
+        for i in range(r):
+            for j in range(i + 1, r):
+                v_ij = _arithmetic_consistency(
+                    fragment_numbers[i], fragment_numbers[j],
+                )
+                if v_ij > 0:
+                    weights[i, j] = -self.eta * v_ij
+                    weights[j, i] = weights[i, j]
 
         return weights
 
@@ -110,3 +272,67 @@ class CoefficientBuilder:
                 weights[j, i] = weights[i, j]
 
         return weights
+
+
+def _extract_numbers(text: str) -> set[float]:
+    """Extract all numbers from a text fragment."""
+    matches = re.findall(r"(?<!\w)([\d,]+(?:\.\d+)?)(?!\w)", text)
+    numbers = set()
+    for m in matches:
+        try:
+            val = float(m.replace(",", ""))
+            if val != 0:
+                numbers.add(val)
+        except ValueError:
+            continue
+    return numbers
+
+
+def _arithmetic_consistency(nums_a: set[float], nums_b: set[float]) -> float:
+    """Score arithmetic consistency between two sets of numbers.
+
+    Checks if any number in one set can be derived from numbers in the
+    other via +, -, x, /. Returns fraction of derivable relationships.
+    """
+    if not nums_a or not nums_b:
+        return 0.0
+
+    shared = nums_a & nums_b
+    derivable = 0
+    total_checks = 0
+
+    for target_set, source_set in [(nums_b, nums_a), (nums_a, nums_b)]:
+        source_list = sorted(source_set)
+        for target in target_set:
+            total_checks += 1
+            if target in shared:
+                derivable += 1
+                continue
+            found = False
+            for k, a in enumerate(source_list):
+                for b in source_list[k:]:
+                    if _approx_eq(a + b, target):
+                        found = True
+                    elif _approx_eq(a * b, target):
+                        found = True
+                    elif _approx_eq(abs(a - b), target):
+                        found = True
+                    elif b != 0 and _approx_eq(a / b, target):
+                        found = True
+                    elif a != 0 and _approx_eq(b / a, target):
+                        found = True
+                    if found:
+                        break
+                if found:
+                    break
+            if found:
+                derivable += 1
+
+    return derivable / total_checks if total_checks > 0 else 0.0
+
+
+def _approx_eq(a: float, b: float, rtol: float = 1e-6) -> bool:
+    """Check approximate equality of two floats."""
+    if b == 0:
+        return abs(a) < rtol
+    return abs(a - b) / max(abs(a), abs(b)) < rtol

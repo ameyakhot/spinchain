@@ -27,10 +27,11 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument("--methods", nargs="+", default=["spinchain", "majority_vote", "random", "union"])
     parser.add_argument("--output", default=None, help="Path to save results JSON")
     parser.add_argument("--no-generate", action="store_true", help="Use cached chains only")
+    parser.add_argument("--diagnostics", action="store_true", help="Dump QUBO coefficient diagnostics")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    return BenchmarkConfig(
+    config = BenchmarkConfig(
         model=args.model,
         temperature=args.temperature,
         chains=args.chains,
@@ -41,6 +42,8 @@ def parse_args() -> BenchmarkConfig:
         output=args.output,
         no_generate=args.no_generate,
     )
+    config._diagnostics = args.diagnostics
+    return config
 
 
 def _classify_agreement(chains: list[str], dataset: str) -> bool:
@@ -78,7 +81,8 @@ def main() -> None:
         generator = ChainGenerator(model=config.model, temperature=config.temperature)
 
     # Set up methods
-    methods = get_methods(config.methods, config)
+    diagnostics = getattr(config, "_diagnostics", False)
+    methods = get_methods(config.methods, config, diagnostics=diagnostics)
     print(f"Methods: {[m.name for m in methods]}")
     print()
 
@@ -115,6 +119,9 @@ def main() -> None:
     if skipped:
         print(f"\nSkipped {skipped} problems (not in cache, --no-generate set)")
     accumulator.print_summary()
+
+    if diagnostics:
+        accumulator.print_diagnostics()
 
     if config.output:
         os.makedirs(os.path.dirname(config.output) or ".", exist_ok=True)

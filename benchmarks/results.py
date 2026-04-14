@@ -92,6 +92,48 @@ class ResultsAccumulator:
 
         print(f"{'=' * 70}\n")
 
+    def print_diagnostics(self) -> None:
+        """Print QUBO coefficient diagnostics for SpinChain results."""
+        has_diag = any(
+            "spinchain" in r.results
+            and "diagnostics" in r.results["spinchain"].metadata
+            for r in self.records
+        )
+        if not has_diag:
+            return
+
+        print(f"{'=' * 90}")
+        print("COEFFICIENT DIAGNOSTICS")
+        print(f"{'=' * 90}")
+        header = (
+            f"{'Problem':<16} {'|linear| mean':>14} {'|quad| mean':>14} "
+            f"{'Ratio':>8} {'Frags':>6} {'Co-occur%':>10} {'Sim mean':>10}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for r in self.records:
+            if "spinchain" not in r.results:
+                continue
+            diag = r.results["spinchain"].metadata.get("diagnostics")
+            if not diag or diag.get("skipped"):
+                continue
+
+            lin_mean = diag["linear_magnitude"]["mean"]
+            quad_mean = diag["quadratic_magnitude"]["mean"]
+            ratio = diag["linear_vs_quadratic_ratio"]
+            frags = diag["num_fragments"]
+            co_occ = diag["co_occurrence_density"]
+            sim_mean = diag["similarity_stats"]["mean"]
+
+            ratio_str = f"{ratio:.1f}x" if ratio != float("inf") else "inf"
+            print(
+                f"{r.problem_id:<16} {lin_mean:>14.6f} {quad_mean:>14.6f} "
+                f"{ratio_str:>8} {frags:>6} {co_occ:>9.1%} {sim_mean:>10.4f}"
+            )
+
+        print(f"{'=' * 90}\n")
+
     def save_json(self, path: str) -> None:
         data = {
             "summary": self.summary(),

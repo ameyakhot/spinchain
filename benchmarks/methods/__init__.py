@@ -10,11 +10,13 @@ from benchmarks.methods.spinchain_method import SpinChainMethod
 from benchmarks.methods.union import UnionMethod
 
 
-def get_methods(names: list[str], config: BenchmarkConfig) -> list[Method]:
+def get_methods(
+    names: list[str], config: BenchmarkConfig, diagnostics: bool = False,
+) -> list[Method]:
     registry: dict[str, Method] = {
         "majority_vote": MajorityVote(),
         "random": RandomSelection(seed=config.seed),
-        "spinchain": SpinChainMethod(config=config),
+        "spinchain": SpinChainMethod(config=config, diagnostics=diagnostics),
         "union": UnionMethod(similarity_threshold=config.similarity_threshold),
     }
     methods = []

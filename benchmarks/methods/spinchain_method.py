@@ -16,10 +16,15 @@ from benchmarks.scoring import score
 class SpinChainMethod:
     name = "spinchain"
 
-    def __init__(self, config: BenchmarkConfig | None = None):
+    def __init__(self, config: BenchmarkConfig | None = None, diagnostics: bool = False):
         self.config = config or BenchmarkConfig()
+        self.diagnostics = diagnostics
 
     def run(self, chains: list[str], problem: Problem) -> MethodResult:
+        chain_answers = [
+            extract_answer(chain, problem.dataset, problem.choices)
+            for chain in chains
+        ]
         result_json = optimize_reasoning(
             completions=chains,
             num_reads=self.config.num_reads,
@@ -27,6 +32,8 @@ class SpinChainMethod:
             similarity_threshold=self.config.similarity_threshold,
             selection_threshold=self.config.selection_threshold,
             inclusion_threshold=self.config.inclusion_threshold,
+            question=problem.question,
+            chain_answers=chain_answers,
         )
         result = json.loads(result_json)
 
@@ -37,14 +44,21 @@ class SpinChainMethod:
 
         predicted = extract_answer(text, problem.dataset, problem.choices)
 
+        metadata = {
+            "min_energy": result.get("min_energy"),
+            "num_fragments": result.get("num_fragments"),
+            "num_selected": len(result.get("selected_indices", [])),
+            "fallback": result.get("fallback", False),
+        }
+
+        if self.diagnostics:
+            from benchmarks.diagnostics import analyze_coefficients
+            diag = analyze_coefficients(chains, self.config)
+            metadata["diagnostics"] = diag
+
         return MethodResult(
             method=self.name,
             predicted_answer=predicted,
             correct=score(predicted, problem.ground_truth, problem.dataset) if predicted else False,
-            metadata={
-                "min_energy": result.get("min_energy"),
-                "num_fragments": result.get("num_fragments"),
-                "num_selected": len(result.get("selected_indices", [])),
-                "fallback": result.get("fallback", False),
-            },
+            metadata=metadata,
         )
