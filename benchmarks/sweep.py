@@ -1,7 +1,7 @@
 """Hyperparameter sweep over cached synthetic problems.
 
 Runs the full SpinChain pipeline with varying hyperparameters, including
-the new cluster-aware terms (delta, epsilon, kappa).
+verification terms (phi, psi, omega) tested on arithmetic-error chains.
 
 Usage:
     uv run python -c "from benchmarks.sweep import main; main()"
@@ -10,12 +10,19 @@ Usage:
 from __future__ import annotations
 
 import itertools
+import json
+import os
 import re
 from collections import defaultdict
 
 import numpy as np
 
-from spinchain.formulation.coefficient_builder import CoefficientBuilder
+from spinchain.formulation.coefficient_builder import (
+    CoefficientBuilder,
+    _extract_numbers,
+    _arithmetic_consistency,
+    _verify_arithmetic,
+)
 from spinchain.formulation.fragment_extractor import FragmentExtractor
 from spinchain.formulation.qubo_builder import QUBOBuilder
 from spinchain.solvers.simulated_annealing import SimulatedAnnealingSolver
@@ -25,18 +32,44 @@ from benchmarks.datasets.gsm8k import GSM8KLoader
 from benchmarks.extractors import extract_answer
 from benchmarks.scoring import score
 
-# Sweep grid — fix embedding-space terms, sweep cluster + consistency terms
-MU_VALUES = [0.5, 1.0, 2.0]
-DELTA_VALUES = [0.0, 1.0]
-EPSILON_VALUES = [0.0, 1.0]
-KAPPA_VALUES = [0.0, 2.0]
-ETA_VALUES = [0.0, 0.5, 1.0, 2.0, 4.0]
+# Sweep grid — verification terms
+PHI_VALUES = [0.0, 1.0, 2.0, 4.0]
+PSI_VALUES = [0.0, 1.0, 2.0]
+OMEGA_VALUES = [0.0, 1.0, 2.0]
 
-# Fixed (proven ineffective in isolation)
+# Fixed
+FIXED_MU = 1.0
 FIXED_ALPHA = 0.5
 FIXED_BETA = 1.0
 FIXED_LAMBDA_SIM = 0.3
-FIXED_GAMMA = 0.0
+
+
+# Arithmetic-error test chains for gsm8k_2
+# Ground truth: 65000 (80000 + 50000 = 130000, 130000 * 1.5 = 195000, 195000 - 130000 = 65000)
+ARITHMETIC_ERROR_CHAINS = {
+    "gsm8k_0": [
+        # Same as before — all correct, answer=18
+        "Janet has 16 eggs per day. She eats 3 for breakfast and bakes 4 into muffins. So she uses 7 eggs. 16 - 7 = 9. She sells the rest at $2 each. 9 * 2 = 18. The answer is 18.",
+        "Janet gets 16 eggs daily. She eats 3 and uses 4 for muffins, that is 7 used. 16 - 7 = 9 eggs remaining. At $2 each, she makes 9 * 2 = 18 dollars. The answer is 18.",
+        "Janet has 16 eggs. She eats 3 and bakes 4. 3 + 4 = 7. She has 16 - 7 = 9 left. She sells at $2 each: 9 * 2 = 18. The answer is 18.",
+    ],
+    "gsm8k_1": [
+        # Same as before — 2 correct (answer=3), 1 wrong (answer=4)
+        "A robe takes 2 bolts of blue fiber and half that much white fiber. Half of 2 is 1. So total is 2 + 1 = 3 bolts. The answer is 3.",
+        "Two bolts of blue fiber and half as much white fiber. Half of 2 is 1. Total fiber needed: 2 + 1 = 3 bolts. The answer is 3.",
+        "A robe needs 2 blue bolts and half that in white, which is 2 / 2 = 1. But wait, maybe half the robe is white? That would be 2 + 2 = 4. The answer is 4.",
+    ],
+    "gsm8k_2": [
+        # WRONG — arithmetic error: 80000 + 50000 = 120000 (should be 130000)
+        "Josh buys a house for 80000 and puts 50000 into repairs. Total cost: 80000 + 50000 = 120000. He sells at 150% of cost. 120000 * 1.5 = 180000. Profit = 180000 - 120000 = 60000. The answer is 60000.",
+        # WRONG — same arithmetic error
+        "Cost is 80000 + 50000 = 120000. At 150%, he sells for 120000 * 1.5 = 180000. Profit: 180000 - 120000 = 60000. The answer is 60000.",
+        # CORRECT
+        "80000 + 50000 = 130000. He sells for 130000 * 1.5 = 195000. Profit = 195000 - 130000 = 65000. The answer is 65000.",
+    ],
+}
+
+GROUND_TRUTHS = {"gsm8k_0": "18", "gsm8k_1": "3", "gsm8k_2": "65000"}
 
 
 def stability_ranking(
@@ -70,7 +103,7 @@ def precompute_cluster_data(
     chains: list[str],
     dataset: str,
 ) -> dict:
-    """Pre-compute cluster-aware arrays (independent of hyperparameters)."""
+    """Pre-compute cluster and verification arrays."""
     r = len(fragments)
 
     # Extract answer from each chain → build clusters
@@ -84,55 +117,56 @@ def precompute_cluster_data(
     for idx, ans in chain_answers.items():
         answer_clusters[ans].add(idx)
     answer_clusters = dict(answer_clusters)
-    num_clusters = len(answer_clusters)
 
-    # d_i: cross-cluster agreement (fraction of clusters containing fragment)
-    shared_scores = np.zeros(r)
-    if num_clusters > 0:
+    # Verification scores per fragment
+    verification_scores = np.array([_verify_arithmetic(frag) for frag in fragments])
+
+    # Cluster integrity: any verified-wrong fragment makes integrity negative
+    # A single arithmetic error taints the entire cluster
+    cluster_integrity: dict[str, float] = {}
+    for answer, chain_set in answer_clusters.items():
+        correct_count = 0
+        wrong_count = 0
         for i in range(r):
-            clusters_containing = sum(
-                1 for chains_in_cluster in answer_clusters.values()
-                if sources[i] & chains_in_cluster
-            )
-            shared_scores[i] = clusters_containing / num_clusters
+            if sources[i] & chain_set:
+                if verification_scores[i] > 0:
+                    correct_count += 1
+                elif verification_scores[i] < 0:
+                    wrong_count += 1
+        if wrong_count > 0:
+            cluster_integrity[answer] = -1.0  # tainted
+        elif correct_count > 0:
+            cluster_integrity[answer] = 1.0   # clean
+        else:
+            cluster_integrity[answer] = 0.0   # no evidence
 
-    # a_i: answer anchor flag
-    anchor_flags = np.zeros(r)
-    pattern = re.compile(r"(?:[Tt]he answer is|####)\s*\S", re.IGNORECASE)
+    # Per-fragment cluster integrity
+    cluster_integrity_per_fragment = np.zeros(r)
     for i in range(r):
-        if pattern.search(fragments[i]):
-            anchor_flags[i] = 1.0
+        for answer, chain_set in answer_clusters.items():
+            if sources[i] & chain_set:
+                cluster_integrity_per_fragment[i] = cluster_integrity[answer]
+                break
 
-    # c_ij: cluster coherence (fraction of clusters where both fragments appear)
-    cluster_coherence = np.zeros((r, r))
-    if num_clusters > 0:
-        for i in range(r):
-            for j in range(i + 1, r):
-                clusters_both = sum(
-                    1 for chains_in_cluster in answer_clusters.values()
-                    if (sources[i] & chains_in_cluster) and (sources[j] & chains_in_cluster)
-                )
-                c_ij = clusters_both / num_clusters
-                cluster_coherence[i, j] = c_ij
-                cluster_coherence[j, i] = c_ij
-
-    # v_ij: numerical consistency (arithmetic relationships between numbers)
-    from spinchain.formulation.coefficient_builder import _extract_numbers, _arithmetic_consistency
-    fragment_numbers = [_extract_numbers(frag) for frag in fragments]
-    numerical_consistency = np.zeros((r, r))
+    # Verification agreement (quadratic)
+    verification_agreement = np.zeros((r, r))
     for i in range(r):
+        if verification_scores[i] == 0:
+            continue
+        sign_i = 1.0 if verification_scores[i] > 0 else -1.0
         for j in range(i + 1, r):
-            v_ij = _arithmetic_consistency(fragment_numbers[i], fragment_numbers[j])
-            numerical_consistency[i, j] = v_ij
-            numerical_consistency[j, i] = v_ij
+            if verification_scores[j] == 0:
+                continue
+            sign_j = 1.0 if verification_scores[j] > 0 else -1.0
+            verification_agreement[i, j] = sign_i * sign_j
+            verification_agreement[j, i] = sign_i * sign_j
 
     return {
         "answer_clusters": answer_clusters,
-        "shared_scores": shared_scores,
-        "anchor_flags": anchor_flags,
-        "cluster_coherence": cluster_coherence,
-        "numerical_consistency": numerical_consistency,
-        "fragment_numbers": fragment_numbers,
+        "cluster_integrity": cluster_integrity,
+        "verification_scores": verification_scores,
+        "cluster_integrity_per_fragment": cluster_integrity_per_fragment,
+        "verification_agreement": verification_agreement,
     }
 
 
@@ -142,32 +176,28 @@ def run_config(
     embeddings: np.ndarray,
     num_completions: int,
     cluster_data: dict,
-    mu: float, delta: float, epsilon: float, kappa: float, eta: float,
+    phi: float, psi: float, omega: float,
     ground_truth: str, dataset: str,
 ) -> dict:
     """Run one hyperparameter config through the full pipeline."""
     r = len(fragments)
     builder = CoefficientBuilder(
-        mu=mu, alpha=FIXED_ALPHA, beta=FIXED_BETA,
-        lambda_sim=FIXED_LAMBDA_SIM, gamma=FIXED_GAMMA,
+        mu=FIXED_MU, alpha=FIXED_ALPHA, beta=FIXED_BETA,
+        lambda_sim=FIXED_LAMBDA_SIM,
     )
     linear_w = builder.compute_linear_weights(sources, num_completions)
 
-    # Add cluster-aware linear terms
-    if delta > 0:
-        linear_w = linear_w + (-delta * cluster_data["shared_scores"])
-    if kappa > 0:
-        linear_w = linear_w + (-kappa * cluster_data["anchor_flags"])
+    # Verification linear terms
+    if phi > 0:
+        linear_w = linear_w + (-phi * cluster_data["verification_scores"])
+    if psi > 0:
+        linear_w = linear_w + (-psi * cluster_data["cluster_integrity_per_fragment"])
 
     quadratic_w = builder.compute_quadratic_weights(sources, num_completions, embeddings)
 
-    # Add cluster coherence quadratic term
-    if epsilon > 0:
-        quadratic_w = quadratic_w + (-epsilon * cluster_data["cluster_coherence"])
-
-    # Add numerical consistency quadratic term
-    if eta > 0:
-        quadratic_w = quadratic_w + (-eta * cluster_data["numerical_consistency"])
+    # Verification quadratic term
+    if omega > 0:
+        quadratic_w = quadratic_w + (-omega * cluster_data["verification_agreement"])
 
     qubo_builder = QUBOBuilder()
     bqm = qubo_builder.build(linear_w, quadratic_w)
@@ -192,30 +222,23 @@ def run_config(
 
 
 def main() -> None:
-    # Load dataset and cache
+    # Load dataset for problem metadata (questions, ground truths)
     loader = GSM8KLoader()
     problems = loader.load(limit=3)
-    cache = ChainCache(
-        cache_dir="benchmarks/.cache",
-        dataset="gsm8k",
-        model="claude-sonnet-4-20250514",
-        temperature=0.7,
-        chains=3,
-    )
 
-    # Pre-extract fragments and cluster data for each problem
+    # Use arithmetic-error chains (hardcoded, no cache needed)
+    extractor = FragmentExtractor(similarity_threshold=0.90)
     problem_data = []
-    extractor = FragmentExtractor(similarity_threshold=0.85)
 
     for problem in problems:
-        chains = cache.get(problem.id)
+        chains = ARITHMETIC_ERROR_CHAINS.get(problem.id)
         if chains is None:
-            print(f"Skipping {problem.id} — not in cache")
             continue
+        gt = GROUND_TRUTHS[problem.id]
+        problem.ground_truth = gt  # override with our known ground truth
+
         fragments = extractor.extract_fragments(chains)
-        cluster_data = precompute_cluster_data(
-            fragments, extractor.fragment_sources, chains, problem.dataset,
-        )
+        cluster_data = precompute_cluster_data(fragments, extractor.fragment_sources, chains, problem.dataset)
 
         problem_data.append({
             "problem": problem,
@@ -227,17 +250,25 @@ def main() -> None:
             "cluster_data": cluster_data,
         })
 
-    if not problem_data:
-        print("No cached problems found. Run the benchmark first to populate the cache.")
-        return
-
-    # Print cluster info
+    # Print verification info
+    print("ARITHMETIC-ERROR TEST CHAINS")
+    print("=" * 80)
     for pd in problem_data:
         pid = pd["problem"].id
-        clusters = pd["cluster_data"]["answer_clusters"]
-        anchors = int(pd["cluster_data"]["anchor_flags"].sum())
-        print(f"  {pid}: clusters={dict((k, len(v)) for k, v in clusters.items())}, "
-              f"anchors={anchors}, fragments={len(pd['fragments'])}")
+        cd = pd["cluster_data"]
+        vs = cd["verification_scores"]
+        verified_correct = int((vs > 0).sum())
+        verified_wrong = int((vs < 0).sum())
+        unverifiable = int((vs == 0).sum())
+        clusters = cd["answer_clusters"]
+        integrity = cd["cluster_integrity"]
+        print(f"  {pid}: truth={pd['problem'].ground_truth}, "
+              f"clusters={dict((k, len(v)) for k, v in clusters.items())}")
+        print(f"    fragments={len(pd['fragments'])}, "
+              f"verified_correct={verified_correct}, "
+              f"verified_wrong={verified_wrong}, "
+              f"unverifiable={unverifiable}")
+        print(f"    cluster_integrity={integrity}")
 
     # Identify disagreement problems
     disagree_ids = set()
@@ -245,52 +276,37 @@ def main() -> None:
         if len(pd["cluster_data"]["answer_clusters"]) > 1:
             disagree_ids.add(pd["problem"].id)
 
-    # Print numerical consistency stats
-    for pd in problem_data:
-        pid = pd["problem"].id
-        nc = pd["cluster_data"]["numerical_consistency"]
-        nonzero = np.count_nonzero(nc[np.triu_indices(len(pd["fragments"]), k=1)])
-        total_pairs = len(pd["fragments"]) * (len(pd["fragments"]) - 1) // 2
-        nums_per_frag = [len(n) for n in pd["cluster_data"]["fragment_numbers"]]
-        print(f"  {pid}: numeric pairs={nonzero}/{total_pairs}, "
-              f"numbers/fragment={nums_per_frag}")
-
     # Generate config grid
-    configs = list(itertools.product(
-        MU_VALUES, DELTA_VALUES, EPSILON_VALUES, KAPPA_VALUES, ETA_VALUES,
-    ))
+    configs = list(itertools.product(PHI_VALUES, PSI_VALUES, OMEGA_VALUES))
     total_solves = len(configs) * len(problem_data)
 
-    print(f"\nCLUSTER + CONSISTENCY SWEEP")
+    print(f"\nVERIFICATION SWEEP")
     print(f"{'=' * 80}")
     print(f"Problems: {len(problem_data)}, Configs: {len(configs)}, Total solves: {total_solves}")
     print(f"Disagreement problems: {disagree_ids}")
-    print(f"Fixed: alpha={FIXED_ALPHA}, beta={FIXED_BETA}, lambda_sim={FIXED_LAMBDA_SIM}, gamma={FIXED_GAMMA}")
-    print(f"Sweep: mu={MU_VALUES}, delta={DELTA_VALUES}, epsilon={EPSILON_VALUES}, "
-          f"kappa={KAPPA_VALUES}, eta={ETA_VALUES}")
+    print(f"Fixed: mu={FIXED_MU}, alpha={FIXED_ALPHA}, beta={FIXED_BETA}, lambda_sim={FIXED_LAMBDA_SIM}")
+    print(f"Sweep: phi={PHI_VALUES}, psi={PSI_VALUES}, omega={OMEGA_VALUES}")
     print()
 
     # Run sweep
     results = {}
-    for i, (mu, delta, epsilon, kappa, eta) in enumerate(configs):
-        config_key = (mu, delta, epsilon, kappa, eta)
+    for i, (phi, psi, omega) in enumerate(configs):
+        config_key = (phi, psi, omega)
         results[config_key] = {}
         for pd in problem_data:
             r = run_config(
                 pd["fragments"], pd["sources"], pd["embeddings"], pd["num_completions"],
                 pd["cluster_data"],
-                mu, delta, epsilon, kappa, eta,
+                phi, psi, omega,
                 pd["problem"].ground_truth, pd["problem"].dataset,
             )
             results[config_key][pd["problem"].id] = r
-        if (i + 1) % 40 == 0:
-            print(f"  {i + 1}/{len(configs)} configs done...")
 
     print(f"  {len(configs)}/{len(configs)} configs done.\n")
 
-    # Report: baseline (no cluster or consistency terms)
-    baseline_key = (1.0, 0.0, 0.0, 0.0, 0.0)
-    print(f"BASELINE (mu=1.0, no cluster/consistency terms)")
+    # Report: baseline (no verification)
+    baseline_key = (0.0, 0.0, 0.0)
+    print(f"BASELINE (phi=0, psi=0, omega=0 — no verification)")
     print("-" * 80)
     for pd in problem_data:
         pid = pd["problem"].id
@@ -301,7 +317,7 @@ def main() -> None:
         print(f"  {pid}: predicted={r['predicted']}, truth={gt}, {mark}{disagree_mark}")
     print()
 
-    # Find majority-vote failures
+    # Find majority-vote failures at baseline
     majority_vote_failures = set()
     for pd in problem_data:
         pid = pd["problem"].id
@@ -329,25 +345,26 @@ def main() -> None:
                 winners.append((config_key, breaks))
 
         if winners:
-            # Group by whether they break other problems
             clean_winners = [(k, b) for k, b in winners if not b]
             dirty_winners = [(k, b) for k, b in winners if b]
 
             if clean_winners:
-                print(f"\n  Clean wins (fix failure, break nothing): {len(clean_winners)}")
+                print(f"\n  CLEAN WINS (fix failure, break nothing): {len(clean_winners)}")
                 for config_key, _ in clean_winners:
-                    mu, delta, epsilon, kappa, eta = config_key
-                    print(f"    mu={mu}  delta={delta}  epsilon={epsilon}  "
-                          f"kappa={kappa}  eta={eta}")
+                    phi, psi, omega = config_key
+                    print(f"    phi={phi}  psi={psi}  omega={omega}")
 
             if dirty_winners:
-                print(f"\n  Dirty wins (fix failure, break something else): {len(dirty_winners)}")
+                print(f"\n  Dirty wins (fix failure, break something): {len(dirty_winners)}")
                 for config_key, breaks in dirty_winners[:5]:
-                    mu, delta, epsilon, kappa, eta = config_key
-                    print(f"    mu={mu}  delta={delta}  epsilon={epsilon}  "
-                          f"kappa={kappa}  eta={eta}  (breaks: {breaks})")
+                    phi, psi, omega = config_key
+                    print(f"    phi={phi}  psi={psi}  omega={omega}  (breaks: {breaks})")
 
             print(f"\n  Total: {len(winners)} / {len(configs)} configs fix the failure")
+            print(f"  Clean: {len(clean_winners)}, Dirty: {len(dirty_winners)}")
+
+            if clean_winners:
+                print("\n  >>> VERIFICATION TERMS OUTPERFORM MAJORITY VOTE <<<")
         else:
             print("  NO CONFIG FIXES THE FAILURE.")
     else:
@@ -355,7 +372,7 @@ def main() -> None:
 
     print()
 
-    # Top 10 by disagreement accuracy
+    # Top 10
     print("TOP 10 CONFIGS BY DISAGREEMENT ACCURACY")
     print("-" * 80)
     config_scores = []
@@ -368,11 +385,10 @@ def main() -> None:
 
     config_scores.sort(key=lambda x: (-x[1], -x[2]))
     for config_key, dc, ac in config_scores[:10]:
-        mu, delta, epsilon, kappa, eta = config_key
+        phi, psi, omega = config_key
         tag = " ← baseline" if config_key == baseline_key else ""
-        print(f"  mu={mu:<4}  delta={delta:<4}  epsilon={epsilon:<4}  kappa={kappa:<4}  "
-              f"eta={eta:<4}  disagree={dc}/{len(disagree_ids)}  "
-              f"overall={ac}/{len(problem_data)}{tag}")
+        print(f"  phi={phi:<4}  psi={psi:<4}  omega={omega:<4}  "
+              f"disagree={dc}/{len(disagree_ids)}  overall={ac}/{len(problem_data)}{tag}")
 
     print(f"\n{'=' * 80}")
 

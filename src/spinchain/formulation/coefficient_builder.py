@@ -39,6 +39,9 @@ class CoefficientBuilder:
         epsilon: float = 0.0,
         kappa: float = 0.0,
         eta: float = 0.0,
+        phi: float = 0.0,
+        psi: float = 0.0,
+        omega: float = 0.0,
         regularization: float = 1e-6,
     ):
         self.mu = mu
@@ -50,6 +53,9 @@ class CoefficientBuilder:
         self.epsilon = epsilon
         self.kappa = kappa
         self.eta = eta
+        self.phi = phi
+        self.psi = psi
+        self.omega = omega
         self.regularization = regularization
 
     def compute_linear_weights(
@@ -175,6 +181,90 @@ class CoefficientBuilder:
                 )
                 c_ij = clusters_both / num_clusters
                 weights[i, j] = -self.epsilon * c_ij
+                weights[j, i] = weights[i, j]
+
+        return weights
+
+    def compute_verification_weights(
+        self,
+        fragments: list[str],
+    ) -> np.ndarray:
+        """Compute arithmetic verification weights (linear).
+
+        w_i = -phi * v_i
+        where v_i = +1 if fragment has verified-correct arithmetic,
+                   -1 if fragment has verified-wrong arithmetic,
+                    0 if no verifiable expressions.
+        """
+        r = len(fragments)
+        weights = np.zeros(r)
+        for i in range(r):
+            weights[i] = -self.phi * _verify_arithmetic(fragments[i])
+        return weights
+
+    def compute_cluster_integrity_weights(
+        self,
+        fragment_sources: list[set[int]],
+        answer_clusters: dict[str, set[int]],
+        verification_scores: np.ndarray,
+    ) -> np.ndarray:
+        """Compute cluster integrity weights (linear).
+
+        w_i = -psi * integrity(cluster_of_i)
+        where integrity = mean(verification_scores) of verifiable fragments
+        in the cluster.
+
+        Propagates verification signal from verifiable to unverifiable
+        fragments within the same answer cluster.
+        """
+        r = len(fragment_sources)
+        weights = np.zeros(r)
+
+        # Compute integrity per cluster
+        cluster_integrity: dict[str, float] = {}
+        for answer, chain_set in answer_clusters.items():
+            scores = []
+            for i in range(r):
+                if fragment_sources[i] & chain_set and verification_scores[i] != 0:
+                    scores.append(verification_scores[i])
+            cluster_integrity[answer] = (
+                sum(scores) / len(scores) if scores else 0.0
+            )
+
+        # Assign each fragment its cluster's integrity
+        for i in range(r):
+            for answer, chain_set in answer_clusters.items():
+                if fragment_sources[i] & chain_set:
+                    weights[i] = -self.psi * cluster_integrity[answer]
+                    break
+
+        return weights
+
+    def compute_verification_agreement(
+        self,
+        verification_scores: np.ndarray,
+    ) -> np.ndarray:
+        """Compute verification agreement weights (quadratic).
+
+        w_ij = -omega * sign(v_i) * sign(v_j)
+        where v_i, v_j are verification scores.
+
+        Creates ferromagnetic coupling between same-verification fragments
+        and antiferromagnetic coupling between correct/wrong fragment pairs.
+        """
+        r = len(verification_scores)
+        weights = np.zeros((r, r))
+
+        for i in range(r):
+            if verification_scores[i] == 0:
+                continue
+            for j in range(i + 1, r):
+                if verification_scores[j] == 0:
+                    continue
+                sign_i = 1.0 if verification_scores[i] > 0 else -1.0
+                sign_j = 1.0 if verification_scores[j] > 0 else -1.0
+                agreement = sign_i * sign_j
+                weights[i, j] = -self.omega * agreement
                 weights[j, i] = weights[i, j]
 
         return weights
@@ -336,3 +426,45 @@ def _approx_eq(a: float, b: float, rtol: float = 1e-6) -> bool:
     if b == 0:
         return abs(a) < rtol
     return abs(a - b) / max(abs(a), abs(b)) < rtol
+
+
+# Pattern: "number op number = number" where op is +, -, *, ×, /
+_EXPR_PATTERN = re.compile(
+    r"([\d,]+(?:\.\d+)?)\s*([+\-*/×÷])\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)"
+)
+
+
+def _verify_arithmetic(text: str) -> float:
+    """Parse arithmetic expressions in text and verify them.
+
+    Returns:
+        +1.0 if all found expressions are correct
+        -1.0 if any expression is incorrect
+         0.0 if no expressions found
+    """
+    matches = _EXPR_PATTERN.findall(text)
+    if not matches:
+        return 0.0
+
+    for lhs_a, op, lhs_b, rhs in matches:
+        a = float(lhs_a.replace(",", ""))
+        b = float(lhs_b.replace(",", ""))
+        expected = float(rhs.replace(",", ""))
+
+        if op == "+":
+            actual = a + b
+        elif op == "-":
+            actual = a - b
+        elif op in ("*", "×"):
+            actual = a * b
+        elif op in ("/", "÷"):
+            if b == 0:
+                continue
+            actual = a / b
+        else:
+            continue
+
+        if not _approx_eq(actual, expected):
+            return -1.0
+
+    return 1.0
