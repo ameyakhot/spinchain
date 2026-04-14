@@ -4,6 +4,27 @@ Inference-time reasoning optimization for LLMs using QUBO/Ising formulations. Bu
 
 SpinChain takes multiple diverse reasoning chains, extracts fragments, formulates their selection as a QUBO problem (following [QCR-LLM](https://arxiv.org/abs/2510.24509)), solves it with simulated annealing, and returns the most stable and coherent fragment subset.
 
+## Current Status: Research Project
+
+SpinChain is an active research project, not a production tool. The pipeline works end-to-end — 72 tests pass, the QUBO solver finds energy minima reliably, and every call is traced with full observability. However, rigorous benchmarking (936 configurations across 9 distinct signals) has shown that **the current formulation does not outperform majority vote** on math reasoning tasks where the majority is wrong.
+
+This is an honest, well-characterized negative result. The core finding: all signals currently in the QUBO (popularity, co-occurrence, semantic similarity, question-relevance, cluster coherence, numerical consistency) measure *what fragments are about*, not *whether they are correct*. When multiple chains do incorrect reasoning about the correct topic, no embedding-space or structural signal can detect the error. See [docs/qubo-formulation.md](docs/qubo-formulation.md) for the full theoretical analysis.
+
+### What you get today
+
+- A working MCP server that Claude Code can call to consolidate and deduplicate reasoning across multiple attempts
+- Full tracing and observability for every optimization call
+- A benchmark harness for evaluating fragment selection methods against majority vote on GSM8K (with ARC and StrategyQA extractors ready)
+- A modular QUBO pipeline where the formulation, solver, and ranking are independently swappable
+- The same QUBO encoding that runs on classical SA today is hardware-portable to D-Wave quantum annealers, optical Ising machines, and QAOA circuits
+
+### What would make this a production tool
+
+1. **Validation at scale** — run on 100+ real LLM-generated chains to find problem classes where fragment-level selection beats majority vote (e.g., chains with arithmetic errors, off-topic divergence, or mixed-quality fragments)
+2. **Verification oracle** — add a lightweight external check (symbolic math evaluator, small model judge) that gives the QUBO a genuine correctness signal, breaking the self-contained limitation
+3. **Cost optimization** — if SpinChain with K=3 chains matches majority vote with K=7, the user saves API calls per question
+4. **Different domains** — code generation (where fragments are functions/blocks) or summarization (where fragment diversity matters) may be better fits than math reasoning
+
 ## Installation
 
 ### Prerequisites
