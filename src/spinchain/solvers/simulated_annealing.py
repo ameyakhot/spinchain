@@ -20,11 +20,13 @@ class SimulatedAnnealingSolver(BaseSolver):
         num_reads: int = 100,
         num_sweeps: int = 1000,
         beta_range: tuple[float, float] | None = None,
+        seed: int | None = None,
     ):
         self.sampler = neal.SimulatedAnnealingSampler()
         self.num_reads = num_reads
         self.num_sweeps = num_sweeps
         self.beta_range = beta_range
+        self.seed = seed
 
     def solve(self, bqm: dimod.BinaryQuadraticModel) -> dimod.SampleSet:
         """Solve using simulated annealing."""
@@ -34,6 +36,8 @@ class SimulatedAnnealingSolver(BaseSolver):
         }
         if self.beta_range is not None:
             kwargs["beta_range"] = self.beta_range
+        if self.seed is not None:
+            kwargs["seed"] = self.seed
 
         return self.sampler.sample(bqm, **kwargs)
 

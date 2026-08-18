@@ -20,7 +20,7 @@ Abstract base class for all QUBO solver backends.
 
 Simulated annealing solver via `dwave-neal`.
 
-- `__init__(num_reads: int = 100, num_sweeps: int = 1000, beta_range: tuple[float, float] | None = None)`
+- `__init__(num_reads: int = 100, num_sweeps: int = 1000, beta_range: tuple[float, float] | None = None, seed: int | None = None)` — `seed` makes runs reproducible (passed through to dwave-neal).
 - `solve(bqm: dimod.BinaryQuadraticModel) -> dimod.SampleSet`
 - `name -> "simulated_annealing"` (property)
 
